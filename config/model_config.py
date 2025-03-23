@@ -15,5 +15,8 @@ class ModelConfig:
     hidden_dim: int = 1536
 
     att_dropout: int = 0.2 #TODO: CHANGE THIS TO MATCH THE ORIGINAL
-    
+    batch_size: int = 16
+
+    out_dim: int = 37
+
     
