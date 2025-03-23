@@ -9,7 +9,8 @@ from torchvision.datasets import OxfordIIITPet
 
 from config.model_config import ModelConfig
 
-from einops import repeat
+from einops import repeat, rearrange
+
 class Attention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -17,7 +18,7 @@ class Attention(nn.Module):
 
         self.d_model = config.d_model
         self.n_heads = config.n_heads
-        self.dropout = config.attn_dropout
+        self.dropout = config.att_dropout
 
         self.d_k = self.d_model // self.n_heads
 
@@ -26,6 +27,8 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(self.d_model, self.n_heads * self.d_k, bias=config.qkv_bias)
 
         self.out_proj = nn.Linear(self.n_heads * self.d_k, self.d_model, bias=config.qkv_bias)
+        self.attn_dropout = nn.Dropout(self.dropout)
+        self.proj_dropout = nn.Dropout(self.dropout)
 
     def forward(self, x: torch.Tensor):
         B, T, _ = x.shape
@@ -35,14 +38,15 @@ class Attention(nn.Module):
         value = self.v_proj(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
 
         # TODO: replace with flash attention for cuda
-        attn_scores = torch.matmul(query, key.transpose(-1, -2)) // math.sqrt(self.d_k)
+        attn_scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.d_k)
         attn_scores = F.softmax(attn_scores, dim=-1) #B, N_H, T, T
+        attn_scores = self.attn_dropout(attn_scores)
 
         attn_output = torch.matmul(attn_scores, value)
         attn_output = attn_output.transpose(1, 2).reshape(B, T, self.n_heads * self.d_k)
-        # TODO: Find out where dropout fits in
 
         out = self.out_proj(attn_output) # B, T, C
+        out = self.proj_dropout(out)
         return out
     
 
@@ -68,11 +72,12 @@ class PatchEmbedding(nn.Module):
         self.p_proj = nn.Linear(patch_size * patch_size * in_channels, d_model)
 
     def forward(self, x: torch.Tensor):
-        B, in_c, H, W = x.shape
-
-        patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size) # TODO: USE einops
-
-        patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(B, -1, in_c * self.patch_size * self.patch_size)
+        
+        # Using einops instead of unfold
+        patches = rearrange(
+            x, 'b c (h p1) (w p2) -> b (h w) (c p1 p2)', 
+            p1=self.patch_size, p2=self.patch_size
+        )
 
         out = self.p_proj(patches)
         return out
@@ -83,7 +88,11 @@ class AttentionBlock(nn.Module):
         self.layernorm1 = nn.LayerNorm(config.d_model)
         self.attention = Attention(config=config)
         self.layernorm2 = nn.LayerNorm(config.d_model)
-        self.feedforward = nn.LayerNorm(config.d_model)
+        self.feedforward = FeedForward(
+            d_model=config.d_model,
+            hidden_dim=config.hidden_dim,
+            dropout=config.att_dropout
+        )
     
     def forward(self, x: torch.Tensor):
         x = x + self.attention(self.layernorm1(x))
@@ -135,5 +144,3 @@ class ViT(nn.Module):
         out = self.head(x)
 
         return out
-
-
